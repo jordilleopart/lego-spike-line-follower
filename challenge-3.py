@@ -115,14 +115,5 @@ async def main():
         
         await runloop.sleep_ms(20)
 
-    # ---------------------------------------------------------
-    # PHASE 3: Finish and Cleanup
-    # ---------------------------------------------------------
-    # Stop the motors completely
-    motor_pair.stop(motor_pair.PAIR_1)
-
-    # Play a success beep (Frequency=440Hz / A4 note, Duration=500ms, Volume=100%)
-    sound.beep(440, 500, 100)
-
 # Start the asynchronous event loop to run the main function
 runloop.run(main())
