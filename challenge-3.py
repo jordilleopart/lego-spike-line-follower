@@ -77,74 +77,42 @@ async def main():
     # Set the robot's starting position (X, Y) and angle (Theta) to zero.
     # This is the origin point (0,0) on our invisible map.
     x_pos, y_pos, theta_rad = 0.0, 0.0, 0.0
-    state = WAIT  # Add this line
+    state = WAIT
+    start_theta_rad = 0.0  # Track rotation start angle
 
     # Read the initial encoder values (accounting for motor mounting direction).
     # We need these baselines to calculate how much the wheels turn in the first loop.
     prev_eL = motor.relative_position(LEFT_MOTOR) * DIR_L
     prev_eR = motor.relative_position(RIGHT_MOTOR) * DIR_R
 
-    # ---------------------------------------------------------
-    # PHASE 1: Move Forward 10cm
-    # ---------------------------------------------------------
-    # Start moving the robot. Steering = 0 means go perfectly straight.
-    # Velocity = 150 is a moderate speed.
-    motor_pair.move(motor_pair.PAIR_1, 0, velocity=150)
-
-    # Keep looping and updating position AS LONG AS the X coordinate is less than 10 cm.
-    while x_pos < 10.0:
-        # 1. Ask the math function to calculate our new position based on wheel movement
-        x_pos, y_pos, theta_rad, prev_eL, prev_eR = \
-            update_pose(x_pos, y_pos, theta_rad, prev_eL, prev_eR)
-
-        # 2. Convert the internal math angle (Radians) to human-readable Degrees for the graph
-        t_deg = round(theta_rad * 180 / math.pi, 2)
-
-        # 3. Print the data formatted specifically for the VS Code Blocklypy Plotter.
-        # It must start with "plot:" followed by Key=Value pairs separated by commas.
-        print("plot: X=" + str(round(x_pos, 2)) +
-              ", Y=" + str(round(y_pos, 2)) +
-              ", Theta=" + str(t_deg) +
-              ", Light=" + str(color_sensor.reflection(SENSOR_PORT)) +
-              ", Dist=" + str(distance_sensor.distance(DISTANCE_PORT)))
-
-        # 4. Pause the loop for 20 milliseconds.
-        # This prevents the Hub from freezing and matches the sensor update rates.
-        await runloop.sleep_ms(20)
-
-    # Stop the motors once we cross the 10cm mark, and wait half a second to stabilize.
-    motor_pair.stop(motor_pair.PAIR_1)
-    await runloop.sleep_ms(500)
-
-    # ---------------------------------------------------------
-    # PHASE 2: Spin in place for 720 degrees (Two full turns)
-    # ---------------------------------------------------------
-    # We need to know exactly where the encoder is RIGHT NOW before we start spinning,
-    # so we can track how much it changes during the spin.
-    start_spin_encoder = motor.relative_position(LEFT_MOTOR) * DIR_L
-
-    # Steering = 100 means a sharp, in-place turn to the right (Left wheel forward, Right wheel back).
-    motor_pair.move(motor_pair.PAIR_1, 100, velocity=150)
-
-    # We use an infinite loop (while True) and will "break" out of it manually when done.
     while True:
-        # Continually update the position so the graph keeps drawing our location
-        x_pos, y_pos, theta_rad, prev_eL, prev_eR = \
-            update_pose(x_pos, y_pos, theta_rad, prev_eL, prev_eR)
-
-        t_deg = round(theta_rad * 180 / math.pi, 2)
-        print("plot: X=" + str(round(x_pos, 2)) +
-              ", Y=" + str(round(y_pos, 2)) +
-              ", Theta=" + str(t_deg) +
-              ", Light=" + str(color_sensor.reflection(SENSOR_PORT)) +
-              ", Dist=" + str(distance_sensor.distance(DISTANCE_PORT)))
-
-        # Calculate how many degrees the left wheel has turned since the spin started.
-        # If it reaches 1468 degrees (our calculated target for a 720-degree body spin), exit the loop.
-        current_encoder = motor.relative_position(LEFT_MOTOR) * DIR_L
-        if abs(current_encoder - start_spin_encoder) >= 1468:
-            break  # Exit the while loop
-
+        if state == WAIT:
+            if button.pressed(button.LEFT):
+                state = STRAIGHT
+                print("State: STRAIGHT_MOVEMENT")
+        
+        elif state == STRAIGHT:
+            motor_pair.move(motor_pair.PAIR_1, 0, velocity=150)
+            x_pos, y_pos, theta_rad, prev_eL, prev_eR = \
+                update_pose(x_pos, y_pos, theta_rad, prev_eL, prev_eR)
+            if x_pos >= 20.0:
+                state = ROTATION
+                motor_pair.stop(motor_pair.PAIR_1)
+                start_theta_rad = theta_rad  # Save angle when rotation starts
+                print("State: ROTATION")
+        
+        elif state == ROTATION:
+            # Rotation logic - max 360 degrees
+            motor_pair.move(motor_pair.PAIR_1, 90, velocity=150)
+            x_pos, y_pos, theta_rad, prev_eL, prev_eR = \
+                update_pose(x_pos, y_pos, theta_rad, prev_eL, prev_eR)
+            
+            # Check if rotated 360 degrees (2*pi radians)
+            if abs(theta_rad - start_theta_rad) >= 2 * math.pi:
+                motor_pair.stop(motor_pair.PAIR_1)
+                state = WAIT
+                print("State: WAIT (rotation complete)")
+        
         await runloop.sleep_ms(20)
 
     # ---------------------------------------------------------
