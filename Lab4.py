@@ -117,7 +117,7 @@ async def main():
             
             
         elif state == LINE_TRACKING_OBSTACLES:
-            if dist_obj >= 250 and dist_obj != -1:
+            if dist_obj >= 250 or dist_obj == -1:
                 state = LINE_TRACKING_FREE
             elif dist_obj <= 100 and dist_obj != -1:
                 state = LINE_TRACKING_REVERSE
