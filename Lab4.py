@@ -2,7 +2,9 @@
 from hub import port, sound, button, light_matrix
 import runloop, color_sensor, distance_sensor, motor_pair, motor, math, sys
 
-# 1. Hardware Configuration & Constants 
+# ==========================================
+# 1. Hardware Configuration & Constants
+# ==========================================
 LEFT_MOTOR, RIGHT_MOTOR = port.C, port.D
 LINE_SENSOR = port.B
 DISTANCE_PORT = port.F
@@ -27,9 +29,9 @@ def update_pose(x, y, th, pL, pR):
     cR = motor.relative_position(RIGHT_MOTOR) * DIR_R
     dL = (cL - pL) * (math.pi / 180) * WHEEL_RADIUS
     dR = (cR - pR) * (math.pi / 180) * WHEEL_RADIUS
-    dist_centro = (dL + dR) / 2
+    dist_center = (dL + dR) / 2
     delta_th = (dR - dL) / TRACK_WIDTH
-    return x + dist_centro * math.cos(th + delta_th/2), y + dist_centro * math.sin(th + delta_th/2), th + delta_th, cL, cR
+    return x + dist_center * math.cos(th + delta_th/2), y + dist_center * math.sin(th + delta_th/2), th + delta_th, cL, cR
 
 # ==========================================
 # 3. Main Loop (FSM)
@@ -61,7 +63,7 @@ async def main():
         # --- FSM Logic ---
         if state == IDLE_NOT_CALIBRATED:
             light_matrix.show_image(light_matrix.IMAGE_HEART)
-            if button.pressed(button.LEFT): # [cite: 8]
+            if button.pressed(button.LEFT):
                 state = CALIBRATING
                 start_th_cal, min_r, max_r = theta_rad, line_ref, line_ref
                 motor_pair.move(motor_pair.PAIR_1, 100, velocity=100)
@@ -69,7 +71,7 @@ async def main():
         elif state == CALIBRATING:
             if line_ref < min_r: min_r = line_ref
             if line_ref > max_r: max_r = line_ref
-            if abs(theta_rad - start_th_cal) >= 2 * math.pi: 
+            if abs(theta_rad - start_th_cal) >= 2 * math.pi:
                 motor_pair.stop(motor_pair.PAIR_1)
                 black_val, white_val = min_r, max_r
                 threshold = (black_val + white_val) // 2
@@ -81,7 +83,7 @@ async def main():
 
         elif state == IDLE_CALIBRATED:
             light_matrix.show_image(light_matrix.IMAGE_HAPPY)
-            if button.pressed(button.RIGHT): 
+            if button.pressed(button.RIGHT):
                 state = LINE_TRACKING_FREE
             if button.pressed(button.LEFT):
                 state = FINISHED
@@ -91,23 +93,23 @@ async def main():
             if dist_obj < 250 and dist_obj != -1:
                 state = LINE_TRACKING_OBSTACLES
 
-            elif line_ref > (white_val - 10):
+            elif line_ref > threshold + 20:
                 state = SEARCH_LINE
 
             else:
                 raw_error = line_ref - threshold
 
-                # --- FILTRO ERROR ---
+                # --- ERROR FILTER ---
                 filtered_error = (alpha * raw_error) + ((1 - alpha) * filtered_error)
 
                 derivative = filtered_error - previous_error
 
                 steering = (filtered_error * Kp) + (derivative * Kd)
 
-                # --- LIMITADOR ---
+                # --- STEERING LIMITER ---
                 steering = max(min(steering, 100), -100)
 
-                # --- FILTRO STEERING ---
+                # --- STEERING FILTER ---
                 filtered_steering = (beta * steering) + ((1 - beta) * filtered_steering)
 
                 motor_pair.move(
@@ -122,12 +124,12 @@ async def main():
                 state = FINISHED
 
         elif state == LINE_TRACKING_OBSTACLES:
-            if dist_obj >= 250 and dist_obj != -1: 
+            if dist_obj >= 250 and dist_obj != -1:
                 state = LINE_TRACKING_FREE
-            elif dist_obj <= 100 and dist_obj != -1: 
+            elif dist_obj <= 100 and dist_obj != -1:
                 state = LINE_TRACKING_REVERSE
             else:
-                # Desaceleración progresiva 
+                # Progressive deceleration
                 speed = int((dist_obj - 10) * (BASE_SPEED / 30))
                 error = line_ref - threshold
                 motor_pair.move(motor_pair.PAIR_1, int(error * Kp), velocity=speed)
@@ -147,35 +149,41 @@ async def main():
         elif state == SEARCH_LINE:
             if search_init is None:
                 search_init = theta_rad
-                search_angle_limit = math.radians(30) # Empezamos con un abanico de 30 grados
-                search_direction = 1 # 1 para derecha, -1 para izquierda
-                print(f"Buscando línea... Origen: {math.degrees(search_init):.1f}")
+                search_direction = 1 if previous_error >= 0 else -1
+                search_angle_limit = math.radians(35)
+                print(f"Line lost. Starting search towards: {'RIGHT' if search_direction == 1 else 'LEFT'}")
 
             diff_angle = theta_rad - search_init
 
-            motor_pair.move(motor_pair.PAIR_1, 100 * search_direction, velocity=120)
+            motor_pair.move(motor_pair.PAIR_1, 80 * search_direction, velocity=110)
 
             if (search_direction == 1 and diff_angle >= search_angle_limit) or \
                (search_direction == -1 and diff_angle <= -search_angle_limit):
                 
-                # Invertir dirección y ampliar el abanico para la siguiente pasada
                 search_direction *= -1
-                search_angle_limit += math.radians(30) # Ampliar 30 grados más cada vez
-                print(f"Ampliando abanico a: {math.degrees(search_angle_limit):.1f}")
+                search_angle_limit += math.radians(25)
+                
+                motor_pair.move(motor_pair.PAIR_1, 0, velocity=100)
+                await runloop.sleep_ms(80)
+                print(f"Expanding search to {math.degrees(search_angle_limit):.1f}°")
 
-            # Si el abanico supera los 180 grados, avanzar un poco y reiniciar (opcional)
-            if search_angle_limit > math.pi:
-                motor_pair.move(motor_pair.PAIR_1, 0, velocity=80) # Avanzar recto un poco
-                search_init = theta_rad # Resetear origen
-                search_angle_limit = math.radians(30)
-
-            # CONDICIÓN DE ÉXITO: Línea detectada 
-            if line_ref <= black_val + 5:                
-                print("¡Línea encontrada! Reanudando tracking...")
+            if line_ref <= black_val + 5:
+                motor_pair.stop(motor_pair.PAIR_1)
+                print("Line found! Resetting filters and resuming...")
                 search_init = None
+                filtered_error = 0
+                filtered_steering = 0
+                previous_error = 0
+                
                 state = LINE_TRACKING_FREE
 
-            # Salida manual por seguridad
+            if search_angle_limit > math.radians(200):
+                print("Search failed. Moving forward to try reconnecting...")
+                motor_pair.move(motor_pair.PAIR_1, 0, velocity=120)
+                await runloop.sleep_ms(300)
+                search_init = theta_rad
+                search_angle_limit = math.radians(35)
+
             if button.pressed(button.LEFT):
                 state = FINISHED
 
