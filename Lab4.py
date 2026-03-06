@@ -1,6 +1,6 @@
 # LEGO slot:0 autostart
 from hub import port, sound, button, light_matrix
-import runloop, color_sensor, distance_sensor, motor_pair, motor, math, sys
+import runloop, color_sensor, distance_sensor, motor_pair, motor, force_sensor, math, sys
 
 # ==========================================
 # 1. Hardware Configuration & Constants
@@ -8,6 +8,7 @@ import runloop, color_sensor, distance_sensor, motor_pair, motor, math, sys
 LEFT_MOTOR, RIGHT_MOTOR = port.C, port.D
 LINE_SENSOR = port.B
 DISTANCE_PORT = port.F
+FORCE_SENSOR_PORT = port.A  
 
 DIR_L, DIR_R = -1, 1
 WHEEL_RADIUS, TRACK_WIDTH = 2.82, 11.5
@@ -34,6 +35,9 @@ LINE_TRACKING_OBSTACLES = "Linetracking_obstacles"
 
 # LINE_TRACKING_REVERSE: Obstacle too close, robot reverses until safe distance is reached
 LINE_TRACKING_REVERSE = "Linetracking_reverse"
+
+# BLOCKED: Rear collision detected while reversing, wait until path is clear (front and rear)
+BLOCKED = "Blocked"
 
 # SEARCH_LINE: Line lost, robot performs expanding zigzag search to find the line again
 SEARCH_LINE = "Search_line"
@@ -75,13 +79,18 @@ async def main():
     LINE_LOST_THRESHOLD = 5        # Number of readings before declaring line lost
     last_valid_error = 0           # Remember last good error for recovery
 
+    # Force sensor threshold (Newtons) - adjust based on your sensor sensitivity
+    FORCE_THRESHOLD = 1
+
     while state != FINISHED:
         x_pos, y_pos, theta_rad, prev_eL, prev_eR = update_pose(x_pos, y_pos, theta_rad, prev_eL, prev_eR)
         
         dist_obj = distance_sensor.distance(DISTANCE_PORT)
         line_ref = color_sensor.reflection(LINE_SENSOR)
+        rear_force = force_sensor.force(FORCE_SENSOR_PORT)  # Read rear force sensor
+        rear_pressed = force_sensor.pressed(FORCE_SENSOR_PORT)  # Or use pressed for simpler detection
         
-        print(f"[{state}] X:{x_pos:.1f} Y:{y_pos:.1f} Th:{math.degrees(theta_rad):.1f} | L:{line_ref} D:{dist_obj}")
+        print(f"[{state}] X:{x_pos:.1f} Y:{y_pos:.1f} Th:{math.degrees(theta_rad):.1f} | L:{line_ref} D:{dist_obj} F:{rear_force}")
 
         # --- FSM Logic ---
         
@@ -186,12 +195,43 @@ async def main():
             
         # STATE: LINE_TRACKING_REVERSE
         # Obstacle too close, reverse until safe distance is reached
+        # If rear collision detected, transition to BLOCKED state
         elif state == LINE_TRACKING_REVERSE:
-            if dist_obj > 100 or dist_obj == -1:
+            # Check for rear collision first
+            if rear_pressed:
+                motor_pair.stop(motor_pair.PAIR_1)
+                print("Rear collision detected! Stopping...")
+                sound.beep(440, 200)  # Alert beep
+                state = BLOCKED
+            elif dist_obj > 100 or dist_obj == -1:
                 state = LINE_TRACKING_FREE
             else:
                 motor_pair.move(motor_pair.PAIR_1, 0, velocity=-80)
+        
+        # STATE: BLOCKED
+        # Rear collision while reversing - stop completely and wait for path to clear
+        # Both front AND rear must be clear before resuming forward
+        # If only rear is clear, can reverse again
+        elif state == BLOCKED:
+            motor_pair.stop(motor_pair.PAIR_1)
+            light_matrix.show_image(light_matrix.IMAGE_SAD)
             
+            front_clear = (dist_obj > 150 or dist_obj == -1)
+            rear_clear = not rear_pressed
+            
+            print(f"BLOCKED - Front clear: {front_clear}, Rear clear: {rear_clear}")
+            
+            if front_clear and rear_clear:
+                # Both clear - resume normal operation
+                print("Path cleared! Resuming...")
+                sound.beep(880, 200)
+                state = LINE_TRACKING_FREE
+            elif rear_clear and not front_clear:
+                # Rear clear but front still blocked - can reverse again
+                print("Rear clear, front blocked - reversing again...")
+                state = LINE_TRACKING_REVERSE
+            # else: both blocked, stay in BLOCKED state
+
         # STATE: SEARCH_LINE
         # Line lost - perform expanding zigzag search pattern to find the line again
         # Direction based on last known error (which side the line was on)
@@ -239,8 +279,8 @@ async def main():
         await runloop.sleep_ms(20)
 
     # STATE: FINISHED
-    # Stop all motors and display "FIN" on the LED matrix
+    # Stop all motors and display "END" on the LED matrix
     motor_pair.stop(motor_pair.PAIR_1)
-    await light_matrix.write("FIN")
+    await light_matrix.write("END")
 
 runloop.run(main())
