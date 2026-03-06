@@ -78,16 +78,11 @@ async def main():
                 state = IDLE_CALIBRATED
                 sound.beep(880, 500)
             
-            if button.pressed(button.LEFT):
-                state = FINISHED
-
         elif state == IDLE_CALIBRATED:
             light_matrix.show_image(light_matrix.IMAGE_HAPPY)
             if button.pressed(button.RIGHT):
                 state = LINE_TRACKING_FREE
-            if button.pressed(button.LEFT):
-                state = FINISHED
-
+            
         elif state == LINE_TRACKING_FREE:
 
             if dist_obj < 250 and dist_obj != -1:
@@ -120,9 +115,7 @@ async def main():
 
                 previous_error = filtered_error
             
-            if button.pressed(button.LEFT):
-                state = FINISHED
-
+            
         elif state == LINE_TRACKING_OBSTACLES:
             if dist_obj >= 250 and dist_obj != -1:
                 state = LINE_TRACKING_FREE
@@ -134,18 +127,14 @@ async def main():
                 error = line_ref - threshold
                 motor_pair.move(motor_pair.PAIR_1, int(error * Kp), velocity=speed)
             
-            if button.pressed(button.LEFT):
-                state = FINISHED
-
+            
         elif state == LINE_TRACKING_REVERSE:
             if dist_obj > 100 or dist_obj == -1:
                 state = LINE_TRACKING_FREE
             else:
                 motor_pair.move(motor_pair.PAIR_1, 0, velocity=-80)
             
-            if button.pressed(button.LEFT):
-                state = FINISHED
-
+            
         elif state == SEARCH_LINE:
             if search_init is None:
                 search_init = theta_rad
