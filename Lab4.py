@@ -152,8 +152,10 @@ async def main():
             elif dist_obj <= 100 and dist_obj != -1:
                 state = LINE_TRACKING_REVERSE
             else:
-                # Progressive deceleration
-                speed = int((dist_obj - 10) * (BASE_SPEED / 30))
+                # Progressive deceleration: map distance 100-250mm to speed 30-BASE_SPEED
+                # Closer = slower, farther = faster
+                min_speed = 30
+                speed = int(min_speed + (dist_obj - 100) * (BASE_SPEED - min_speed) / (250 - 100))
                 error = line_ref - threshold
                 motor_pair.move(motor_pair.PAIR_1, int(error * Kp), velocity=speed)
             
