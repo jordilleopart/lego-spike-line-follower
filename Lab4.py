@@ -14,13 +14,31 @@ WHEEL_RADIUS, TRACK_WIDTH = 2.82, 11.5
 
 Kp, Kd, BASE_SPEED = 1.2, 2.0, 150 
 
+# ==========================================
+# 2. FSM State Definitions
+# ==========================================
+# IDLE_NOT_CALIBRATED: Initial state, waiting for user to press LEFT button to start calibration
 IDLE_NOT_CALIBRATED = "Idle_not_calibrated"
+
+# CALIBRATING: Robot spins 360° to detect min/max reflection values (black/white)
 CALIBRATING = "Calibrating"
+
+# IDLE_CALIBRATED: Calibration complete, waiting for user to press RIGHT button to start line tracking
 IDLE_CALIBRATED = "Idle_calibrated"
+
+# LINE_TRACKING_FREE: Normal line following mode using PD controller, no obstacles detected
 LINE_TRACKING_FREE = "Linetracking_free"
+
+# LINE_TRACKING_OBSTACLES: Obstacle detected ahead, robot slows down progressively while following line
 LINE_TRACKING_OBSTACLES = "Linetracking_obstacles"
+
+# LINE_TRACKING_REVERSE: Obstacle too close, robot reverses until safe distance is reached
 LINE_TRACKING_REVERSE = "Linetracking_reverse"
+
+# SEARCH_LINE: Line lost, robot performs expanding zigzag search to find the line again
 SEARCH_LINE = "Search_line"
+
+# FINISHED: Final state, robot stops all motors and displays "FIN"
 FINISHED = "Finished"
 
 
@@ -61,6 +79,9 @@ async def main():
         print(f"[{state}] X:{x_pos:.1f} Y:{y_pos:.1f} Th:{math.degrees(theta_rad):.1f} | L:{line_ref} D:{dist_obj}")
 
         # --- FSM Logic ---
+        
+        # STATE: IDLE_NOT_CALIBRATED
+        # Display heart icon and wait for LEFT button to start calibration
         if state == IDLE_NOT_CALIBRATED:
             light_matrix.show_image(light_matrix.IMAGE_HEART)
             if button.pressed(button.LEFT):
@@ -68,6 +89,8 @@ async def main():
                 start_th_cal, min_r, max_r = theta_rad, line_ref, line_ref
                 motor_pair.move(motor_pair.PAIR_1, 100, velocity=100)
 
+        # STATE: CALIBRATING
+        # Spin robot 360° while recording min/max sensor values to determine black/white threshold
         elif state == CALIBRATING:
             if line_ref < min_r: min_r = line_ref
             if line_ref > max_r: max_r = line_ref
@@ -77,12 +100,17 @@ async def main():
                 threshold = (black_val + white_val) // 2
                 state = IDLE_CALIBRATED
                 sound.beep(880, 500)
-            
+        
+        # STATE: IDLE_CALIBRATED
+        # Display happy icon and wait for RIGHT button to start line tracking
         elif state == IDLE_CALIBRATED:
             light_matrix.show_image(light_matrix.IMAGE_HAPPY)
             if button.pressed(button.RIGHT):
                 state = LINE_TRACKING_FREE
-            
+        
+        # STATE: LINE_TRACKING_FREE
+        # Follow line using PD controller with filtered error and steering
+        # Transitions to OBSTACLES if object detected, or SEARCH if line lost
         elif state == LINE_TRACKING_FREE:
 
             if dist_obj < 250 and dist_obj != -1:
@@ -115,7 +143,9 @@ async def main():
 
                 previous_error = filtered_error
             
-            
+        # STATE: LINE_TRACKING_OBSTACLES
+        # Slow down progressively as obstacle gets closer while still following the line
+        # Transitions to REVERSE if too close, or FREE if obstacle cleared
         elif state == LINE_TRACKING_OBSTACLES:
             if dist_obj >= 250 or dist_obj == -1:
                 state = LINE_TRACKING_FREE
@@ -127,14 +157,17 @@ async def main():
                 error = line_ref - threshold
                 motor_pair.move(motor_pair.PAIR_1, int(error * Kp), velocity=speed)
             
-            
+        # STATE: LINE_TRACKING_REVERSE
+        # Obstacle too close, reverse until safe distance is reached
         elif state == LINE_TRACKING_REVERSE:
             if dist_obj > 100 or dist_obj == -1:
                 state = LINE_TRACKING_FREE
             else:
                 motor_pair.move(motor_pair.PAIR_1, 0, velocity=-80)
             
-            
+        # STATE: SEARCH_LINE
+        # Line lost - perform expanding zigzag search pattern to find the line again
+        # Direction based on last known error (which side the line was on)
         elif state == SEARCH_LINE:
             if search_init is None:
                 search_init = theta_rad
@@ -178,6 +211,8 @@ async def main():
 
         await runloop.sleep_ms(20)
 
+    # STATE: FINISHED
+    # Stop all motors and display "FIN" on the LED matrix
     motor_pair.stop(motor_pair.PAIR_1)
     await light_matrix.write("FIN")
 
