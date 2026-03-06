@@ -12,7 +12,7 @@ DISTANCE_PORT = port.F
 DIR_L, DIR_R = -1, 1
 WHEEL_RADIUS, TRACK_WIDTH = 2.82, 11.5
 
-Kp, Kd, BASE_SPEED = 1.2, 2.0, 150 
+Kp, Kd, BASE_SPEED = 1.0, 1.5, 120  # Lower speed and gains for tighter control
 
 # ==========================================
 # 2. FSM State Definitions
@@ -69,6 +69,11 @@ async def main():
     alpha = 0.6
     filtered_steering = 0
     beta = 0.7
+    
+    # New variables for improved line tracking
+    line_lost_counter = 0          # Count consecutive "off-line" readings
+    LINE_LOST_THRESHOLD = 5        # Number of readings before declaring line lost
+    last_valid_error = 0           # Remember last good error for recovery
 
     while state != FINISHED:
         x_pos, y_pos, theta_rad, prev_eL, prev_eR = update_pose(x_pos, y_pos, theta_rad, prev_eL, prev_eR)
@@ -115,11 +120,25 @@ async def main():
 
             if dist_obj < 250 and dist_obj != -1:
                 state = LINE_TRACKING_OBSTACLES
+                line_lost_counter = 0
 
-            elif line_ref > threshold + 20:
-                state = SEARCH_LINE
+            elif line_ref > white_val - 10:
+                # Increment lost counter instead of immediately switching
+                line_lost_counter += 1
+                
+                if line_lost_counter >= LINE_LOST_THRESHOLD:
+                    # Truly lost - go to search
+                    state = SEARCH_LINE
+                    line_lost_counter = 0
+                else:
+                    # Brief loss - steer harder in last known direction to recover
+                    recovery_steering = 60 if last_valid_error >= 0 else -60
+                    motor_pair.move(motor_pair.PAIR_1, recovery_steering, velocity=BASE_SPEED // 2)
 
             else:
+                # On line - reset lost counter
+                line_lost_counter = 0
+                
                 raw_error = line_ref - threshold
 
                 # --- ERROR FILTER ---
@@ -127,6 +146,7 @@ async def main():
 
                 derivative = filtered_error - previous_error
 
+                # --- PD CONTROL ---
                 steering = (filtered_error * Kp) + (derivative * Kd)
 
                 # --- STEERING LIMITER ---
@@ -135,13 +155,18 @@ async def main():
                 # --- STEERING FILTER ---
                 filtered_steering = (beta * steering) + ((1 - beta) * filtered_steering)
 
+                # --- ADAPTIVE SPEED: slow down on sharp turns ---
+                speed = BASE_SPEED - int(abs(filtered_steering) * 0.5)
+                speed = max(speed, 80)  # Minimum speed
+
                 motor_pair.move(
                     motor_pair.PAIR_1,
                     int(filtered_steering),
-                    velocity=BASE_SPEED
+                    velocity=speed
                 )
 
                 previous_error = filtered_error
+                last_valid_error = filtered_error  # Save for recovery
             
         # STATE: LINE_TRACKING_OBSTACLES
         # Slow down progressively as obstacle gets closer while still following the line
