@@ -78,7 +78,8 @@ async def main():
     line_lost_counter = 0          # Count consecutive "off-line" readings
     LINE_LOST_THRESHOLD = 5        # Number of readings before declaring line lost
     last_valid_error = 0           # Remember last good error for recovery
-
+    reacquire_timer = 0
+    reacquire_direction = 0
     # Force sensor threshold (Newtons) - adjust based on your sensor sensitivity
     FORCE_THRESHOLD = 1
 
@@ -126,56 +127,71 @@ async def main():
         # Follow line using PD controller with filtered error and steering
         # Transitions to OBSTACLES if object detected, or SEARCH if line lost
         elif state == LINE_TRACKING_FREE:
+            light_matrix.show_image(light_matrix.IMAGE_HAPPY)
 
-            if dist_obj < 250 and dist_obj != -1:
-                state = LINE_TRACKING_OBSTACLES
-                line_lost_counter = 0
-
-            elif line_ref > white_val - 10:
-                # Increment lost counter instead of immediately switching
-                line_lost_counter += 1
-                
-                if line_lost_counter >= LINE_LOST_THRESHOLD:
-                    # Truly lost - go to search
-                    state = SEARCH_LINE
-                    line_lost_counter = 0
-                else:
-                    # Brief loss - steer harder in last known direction to recover
-                    recovery_steering = 60 if last_valid_error >= 0 else -60
-                    motor_pair.move(motor_pair.PAIR_1, recovery_steering, velocity=BASE_SPEED // 2)
-
-            else:
-                # On line - reset lost counter
-                line_lost_counter = 0
-                
-                raw_error = line_ref - threshold
-
-                # --- ERROR FILTER ---
-                filtered_error = (alpha * raw_error) + ((1 - alpha) * filtered_error)
-
-                derivative = filtered_error - previous_error
-
-                # --- PD CONTROL ---
-                steering = (filtered_error * Kp) + (derivative * Kd)
-
-                # --- STEERING LIMITER ---
-                steering = max(min(steering, 100), -100)
-
-                # --- STEERING FILTER ---
-                filtered_steering = (beta * steering) + ((1 - beta) * filtered_steering)
-
-                # --- ADAPTIVE SPEED: slow down on sharp turns ---
-                speed = BASE_SPEED - int(abs(filtered_steering) * 0.5)
-                speed = max(speed, 80)  # Minimum speed
+            # REACQUIRE MODE : After reacquiring the line, briefly steer harder in the opposite direction to ensure stable recovery. Doesn't work well with the search behavior, causes instability after reacquiring, commented in report.
+            if 'reacquire_timer' in locals() and reacquire_timer > 0:
 
                 motor_pair.move(
                     motor_pair.PAIR_1,
-                    int(filtered_steering),
-                    velocity=speed
+                    20 * reacquire_direction,
+                    velocity=70
                 )
 
-                previous_error = filtered_error
-                last_valid_error = filtered_error  # Save for recovery
+                reacquire_timer -= 1
+                await runloop.sleep_ms(20)
+                
+            else:
+                reacquire_timer = 0  
+                if dist_obj < 250 and dist_obj != -1:
+                    state = LINE_TRACKING_OBSTACLES
+                    line_lost_counter = 0
+
+                elif line_ref > white_val - 10:
+                    # Increment lost counter instead of immediately switching
+                    line_lost_counter += 1
+                    
+                    if line_lost_counter >= LINE_LOST_THRESHOLD:
+                        # Truly lost - go to search
+                        state = SEARCH_LINE
+                        line_lost_counter = 0
+                    else:
+                        # Brief loss - steer harder in last known direction to recover
+                        recovery_steering = 60 if last_valid_error >= 0 else -60
+                        motor_pair.move(motor_pair.PAIR_1, recovery_steering, velocity=BASE_SPEED // 2)
+
+                else:
+                    # On line - reset lost counter
+                    line_lost_counter = 0
+                    
+                    raw_error = line_ref - threshold
+
+                    # --- ERROR FILTER ---
+                    filtered_error = (alpha * raw_error) + ((1 - alpha) * filtered_error)
+
+                    derivative = filtered_error - previous_error
+
+                    # --- PD CONTROL ---
+                    steering = (filtered_error * Kp) + (derivative * Kd)
+
+                    # --- STEERING LIMITER ---
+                    steering = max(min(steering, 100), -100)
+
+                    # --- STEERING FILTER ---
+                    filtered_steering = (beta * steering) + ((1 - beta) * filtered_steering)
+
+                    # --- ADAPTIVE SPEED: slow down on sharp turns ---
+                    speed = BASE_SPEED - int(abs(filtered_steering) * 0.5)
+                    speed = max(speed, 60)  # Minimum speed
+
+                    motor_pair.move(
+                        motor_pair.PAIR_1,
+                        int(filtered_steering),
+                        velocity=speed
+                    )
+
+                    previous_error = filtered_error
+                    last_valid_error = filtered_error  # Save for recovery
             
         # STATE: LINE_TRACKING_OBSTACLES
         # Slow down progressively as obstacle gets closer while still following the line
@@ -206,7 +222,8 @@ async def main():
             elif dist_obj > 100 or dist_obj == -1:
                 state = LINE_TRACKING_FREE
             else:
-                motor_pair.move(motor_pair.PAIR_1, 0, velocity=-80)
+                error = line_ref - threshold
+                motor_pair.move(motor_pair.PAIR_1, int(-error * Kp), velocity=-60)
         
         # STATE: BLOCKED
         # Rear collision while reversing - stop completely and wait for path to clear
@@ -221,16 +238,16 @@ async def main():
             
             print(f"BLOCKED - Front clear: {front_clear}, Rear clear: {rear_clear}")
             
-            if front_clear and rear_clear:
-                # Both clear - resume normal operation
-                print("Path cleared! Resuming...")
+            if front_clear:
+                print("¡Frente despejado! Reanudando seguimiento...")
                 sound.beep(880, 200)
+                light_matrix.show_image(light_matrix.IMAGE_HAPPY)
                 state = LINE_TRACKING_FREE
+            
             elif rear_clear and not front_clear:
-                # Rear clear but front still blocked - can reverse again
-                print("Rear clear, front blocked - reversing again...")
+                print("Trasera despejada, pero frente bloqueado. Intentando retroceso de seguridad...")
                 state = LINE_TRACKING_REVERSE
-            # else: both blocked, stay in BLOCKED state
+            
 
         # STATE: SEARCH_LINE
         # Line lost - perform expanding zigzag search pattern to find the line again
@@ -246,6 +263,7 @@ async def main():
 
             motor_pair.move(motor_pair.PAIR_1, 80 * search_direction, velocity=110)
 
+            # Check if we've reached the current search angle limit in the current direction
             if (search_direction == 1 and diff_angle >= search_angle_limit) or \
                (search_direction == -1 and diff_angle <= -search_angle_limit):
                 
@@ -259,6 +277,11 @@ async def main():
             if line_ref <= black_val + 5:
                 motor_pair.stop(motor_pair.PAIR_1)
                 print("Line found! Resetting filters and resuming...")
+
+                # Commented in report : Doesn't work well with the search behavior, causes instability after reacquiring
+                reacquire_timer = 15  
+                reacquire_direction = -1 if previous_error >= 0 else 1
+
                 search_init = None
                 filtered_error = 0
                 filtered_steering = 0
@@ -274,8 +297,7 @@ async def main():
                 search_angle_limit = math.radians(35)
 
             if button.pressed(button.LEFT):
-                state = FINISHED
-
+                state = FINISHED                        
         await runloop.sleep_ms(20)
 
     # STATE: FINISHED
